@@ -12,4 +12,4 @@ List of currently supported "attacks":
 - Telnet Session Sniff
 - Authentication Sniff
 
-There are bugs. Please notify use if you find any.
+There are bugs. Please notify use if you find some.
